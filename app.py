@@ -15,10 +15,17 @@ st.sidebar.markdown("""
 溢价率 = (ETF实时价格 - ETF净值) ÷ ETF净值 × 100%
 
 **说明：**  
-由于无法直接获取159941的净值数据，本应用使用价格比率的长期均值作为"理论净值"的代理来计算溢价率。
+可以使用已知溢价率反推净值，或使用akshare获取净值数据。
 """)
+
+# 添加选项：使用已知溢价率或下载净值数据
+use_known_premium = st.sidebar.checkbox("使用已知溢价率反推净值", value=True,
+                                        help="勾选后，使用输入的溢价率反推净值，速度更快")
+known_premium = st.sidebar.number_input("已知溢价率 (%)", value=8.47, min_value=-50.0, max_value=100.0, step=0.01,
+                                        help="输入当前已知的溢价率，用于反推净值")
+
 window_size = st.sidebar.slider("短期基准窗口（交易日）", min_value=10, max_value=120, value=30, step=5,
-                                help="用于计算溢价率基准的滚动窗口大小。默认使用250日长期均值，此参数仅在长期数据不足时使用。")
+                                help="用于计算溢价率基准的滚动窗口大小。仅在估算方法时使用。")
 
 # 添加加载状态
 with st.spinner("正在下载数据..."):
@@ -120,36 +127,55 @@ df.columns = ["159941", "QQQ"]
 
 # 尝试获取159941的真实净值数据
 df_nav = None
-try:
-    import akshare as ak
-    # 使用akshare获取ETF净值数据
-    # 获取日期范围（转换为akshare需要的格式）
-    start_date = df.index[0].strftime("%Y%m%d")
-    end_date = df.index[-1].strftime("%Y%m%d")
+
+# 如果用户选择使用已知溢价率反推净值
+if use_known_premium and known_premium is not None:
+    # 使用已知溢价率反推净值：净值 = 价格 / (1 + 溢价率/100)
+    current_price = df['159941'].iloc[-1]
+    current_nav = current_price / (1 + known_premium / 100)
     
-    # 使用fund_etf_fund_info_em获取净值数据
-    df_nav = ak.fund_etf_fund_info_em(fund="159941", start_date=start_date, end_date=end_date)
+    # 创建净值数据框
+    # 方法：使用当前净值和价格变化来反推历史净值
+    # 假设净值变化与价格变化成比例（简化假设）
+    df_nav = pd.DataFrame(index=df.index)
+    price_change_ratio = df['159941'] / current_price  # 相对于当前价格的变化比例
+    df_nav['nav_value'] = current_nav * price_change_ratio
     
-    if not df_nav.empty and '净值日期' in df_nav.columns and '单位净值' in df_nav.columns:
-        # 转换日期和净值
-        df_nav['净值日期'] = pd.to_datetime(df_nav['净值日期'])
-        df_nav.set_index('净值日期', inplace=True)
-        df_nav['nav_value'] = pd.to_numeric(df_nav['单位净值'], errors='coerce')
-        df_nav = df_nav[['nav_value']].dropna()
-        
-        if not df_nav.empty:
-            st.success(f"✅ 成功获取159941净值数据 ({len(df_nav)} 条)")
-        else:
-            st.warning("⚠️ 净值数据为空，将使用估算方法")
-            df_nav = None
-    else:
-        st.warning("⚠️ 净值数据格式不正确，将使用估算方法")
+    st.success(f"✅ 使用已知溢价率 {known_premium:.2f}% 反推净值（快速模式）")
+    st.info(f"📊 当前价格: {current_price:.4f} 元 → 反推净值: {current_nav:.4f} 元")
+else:
+    # 尝试从akshare下载净值数据
+    try:
+        import akshare as ak
+        with st.spinner("正在从akshare获取净值数据（可能需要较长时间）..."):
+            # 使用akshare获取ETF净值数据
+            # 获取日期范围（转换为akshare需要的格式）
+            start_date = df.index[0].strftime("%Y%m%d")
+            end_date = df.index[-1].strftime("%Y%m%d")
+            
+            # 使用fund_etf_fund_info_em获取净值数据
+            df_nav = ak.fund_etf_fund_info_em(fund="159941", start_date=start_date, end_date=end_date)
+            
+            if not df_nav.empty and '净值日期' in df_nav.columns and '单位净值' in df_nav.columns:
+                # 转换日期和净值
+                df_nav['净值日期'] = pd.to_datetime(df_nav['净值日期'])
+                df_nav.set_index('净值日期', inplace=True)
+                df_nav['nav_value'] = pd.to_numeric(df_nav['单位净值'], errors='coerce')
+                df_nav = df_nav[['nav_value']].dropna()
+                
+                if not df_nav.empty:
+                    st.success(f"✅ 成功获取159941净值数据 ({len(df_nav)} 条)")
+                else:
+                    st.warning("⚠️ 净值数据为空，将使用估算方法")
+                    df_nav = None
+            else:
+                st.warning("⚠️ 净值数据格式不正确，将使用估算方法")
+                df_nav = None
+    except ImportError:
+        st.warning("⚠️ akshare未安装，无法获取净值数据，将使用估算方法")
+    except Exception as e:
+        st.warning(f"⚠️ 获取净值数据失败: {str(e)}，将使用估算方法")
         df_nav = None
-except ImportError:
-    st.warning("⚠️ akshare未安装，无法获取净值数据，将使用估算方法")
-except Exception as e:
-    st.warning(f"⚠️ 获取净值数据失败: {str(e)}，将使用估算方法")
-    df_nav = None
 
 # 计算溢价率：159941是广发纳斯达克100ETF（纳指ETF）
 # 溢价率 = (ETF实时价格 - ETF净值) ÷ ETF净值 × 100%
