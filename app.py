@@ -174,76 +174,84 @@ if df_nav is not None and not df_nav.empty:
         df_nav = None
 
 # 如果无法获取净值数据，使用价格比率的长期均值作为"理论净值"的代理
-if df_nav is None or 'premium' not in df.columns or (df['premium'].isna().all() if 'premium' in df.columns else True):
+# 检查是否已经成功使用真实净值计算了溢价率
+use_real_nav = ('premium' in df.columns and df['premium'].notna().any() and 
+                'nav_value' in df.columns and df['nav_value'].notna().any())
+
+if not use_real_nav:
     # 价格比率 = 159941价格 / QQQ价格
     # 注意：159941是人民币计价，QQQ是美元计价，但都跟踪纳斯达克100指数
     df["price_ratio"] = df["159941"] / df["QQQ"]
 
-# 使用长期滚动均值作为"理论净值"的代理
-# 优先使用早期历史数据（2020-2023）建立基准，因为那时溢价率可能较低
-# 如果数据不足，则使用全部历史数据
+    # 使用长期滚动均值作为"理论净值"的代理
+    # 优先使用早期历史数据（2020-2023）建立基准，因为那时溢价率可能较低
+    # 如果数据不足，则使用全部历史数据
 
-# 尝试获取早期数据建立基准
-try:
-    # 下载早期数据（2020-2023年）
-    df_cn_early = yf.download("159941.SZ", start="2020-01-01", end="2024-01-01", progress=False)
-    df_us_early = yf.download("QQQ", start="2020-01-01", end="2024-01-01", progress=False)
-    
-    if not df_cn_early.empty and not df_us_early.empty:
-        if isinstance(df_cn_early.columns, pd.MultiIndex):
-            close_cn_early = df_cn_early['Close'].iloc[:, 0]
-        else:
-            close_cn_early = df_cn_early['Close']
-        close_us_early = df_us_early['Close']
+    # 尝试获取早期数据建立基准
+    try:
+        # 下载早期数据（2020-2023年）
+        df_cn_early = yf.download("159941.SZ", start="2020-01-01", end="2024-01-01", progress=False)
+        df_us_early = yf.download("QQQ", start="2020-01-01", end="2024-01-01", progress=False)
         
-        df_early = pd.concat([close_cn_early, close_us_early], axis=1).dropna()
-        if not df_early.empty:
-            df_early.columns = ["159941", "QQQ"]
-            df_early["price_ratio"] = df_early["159941"] / df_early["QQQ"]
-            # 使用早期数据的中位数作为基准（更稳健）
-            baseline_value = df_early["price_ratio"].median()
-            st.sidebar.info("✓ 使用早期数据（2020-2023）建立基准")
+        if not df_cn_early.empty and not df_us_early.empty:
+            if isinstance(df_cn_early.columns, pd.MultiIndex):
+                close_cn_early = df_cn_early['Close'].iloc[:, 0]
+            else:
+                close_cn_early = df_cn_early['Close']
+            close_us_early = df_us_early['Close']
+            
+            df_early = pd.concat([close_cn_early, close_us_early], axis=1).dropna()
+            if not df_early.empty:
+                df_early.columns = ["159941", "QQQ"]
+                df_early["price_ratio"] = df_early["159941"] / df_early["QQQ"]
+                # 使用早期数据的中位数作为基准（更稳健）
+                baseline_value = df_early["price_ratio"].median()
+                st.sidebar.info("✓ 使用早期数据（2020-2023）建立基准")
+            else:
+                baseline_value = df["price_ratio"].median()
         else:
             baseline_value = df["price_ratio"].median()
-    else:
+    except Exception:
+        # 如果获取早期数据失败，使用当前数据的中位数
         baseline_value = df["price_ratio"].median()
-except Exception:
-    # 如果获取早期数据失败，使用当前数据的中位数
-    baseline_value = df["price_ratio"].median()
 
-# 使用滚动窗口计算基准
-long_window = min(250, len(df) // 2)
-if long_window < 60:
-    long_window = len(df)
+    # 使用滚动窗口计算基准
+    long_window = min(250, len(df) // 2)
+    if long_window < 60:
+        long_window = len(df)
 
-df["ratio_baseline"] = df["price_ratio"].rolling(window=long_window, min_periods=max(60, long_window//4)).mean()
+    df["ratio_baseline"] = df["price_ratio"].rolling(window=long_window, min_periods=max(60, long_window//4)).mean()
 
-# 如果长期窗口数据不足，使用可调整的短期窗口
-if df["ratio_baseline"].isna().sum() > len(df) * 0.2:
-    # 使用用户设置的窗口大小
-    df["ratio_baseline"] = df["price_ratio"].rolling(window=window_size, min_periods=max(10, window_size//2)).mean()
+    # 如果长期窗口数据不足，使用可调整的短期窗口
+    if df["ratio_baseline"].isna().sum() > len(df) * 0.2:
+        # 使用用户设置的窗口大小
+        df["ratio_baseline"] = df["price_ratio"].rolling(window=window_size, min_periods=max(10, window_size//2)).mean()
 
-# 填充初始缺失值：使用早期数据的中位数
-if df["ratio_baseline"].isna().any():
-    df["ratio_baseline"] = df["ratio_baseline"].bfill()  # 从后往前填充
+    # 填充初始缺失值：使用早期数据的中位数
     if df["ratio_baseline"].isna().any():
-        df["ratio_baseline"] = df["ratio_baseline"].fillna(baseline_value)
+        df["ratio_baseline"] = df["ratio_baseline"].bfill()  # 从后往前填充
+        if df["ratio_baseline"].isna().any():
+            df["ratio_baseline"] = df["ratio_baseline"].fillna(baseline_value)
 
-# 溢价率 = (当前价格比率 / 基准比率 - 1) * 100
-# 这相当于：(当前价格 - 理论净值) / 理论净值 * 100%
-df["premium"] = ((df["price_ratio"] / df["ratio_baseline"]) - 1) * 100
-
-# 如果溢价率计算异常，使用更短期的基准
-if df["premium"].abs().max() > 500:  # 如果溢价率异常大
-    # 使用用户设置的窗口大小
-    df["ratio_baseline"] = df["price_ratio"].rolling(window=window_size, min_periods=max(10, window_size//2)).mean()
-    df["ratio_baseline"] = df["ratio_baseline"].bfill().fillna(df["price_ratio"].mean())
+    # 溢价率 = (当前价格比率 / 基准比率 - 1) * 100
+    # 这相当于：(当前价格 - 理论净值) / 理论净值 * 100%
     df["premium"] = ((df["price_ratio"] / df["ratio_baseline"]) - 1) * 100
 
+    # 如果溢价率计算异常，使用更短期的基准
+    if df["premium"].abs().max() > 500:  # 如果溢价率异常大
+        # 使用用户设置的窗口大小
+        df["ratio_baseline"] = df["price_ratio"].rolling(window=window_size, min_periods=max(10, window_size//2)).mean()
+        df["ratio_baseline"] = df["ratio_baseline"].bfill().fillna(df["price_ratio"].mean())
+        df["premium"] = ((df["price_ratio"] / df["ratio_baseline"]) - 1) * 100
+
 # 确保premium列存在
-if 'premium' not in df.columns:
+if 'premium' not in df.columns or df['premium'].isna().all():
     st.error("溢价率计算失败，请检查数据源")
     st.stop()
+
+# 填充缺失的溢价率值（如果有）
+if df["premium"].isna().any():
+    df["premium"] = df["premium"].ffill().bfill()
 
 df["premium_high"] = df["premium"].where(df["premium"] > 8)
 df["premium_low"] = df["premium"].where(df["premium"] < 1)
