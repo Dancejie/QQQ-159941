@@ -257,18 +257,40 @@ with col2:
 with col3:
     st.metric("当前溢价率", f"{df['premium'].iloc[-1]:.2f}%", f"{df['premium'].iloc[-1] - df['premium'].iloc[-2]:.2f}%")
 with col4:
-    # 显示理论净值（估算）
-    estimated_nav = df['159941'].iloc[-1] / (1 + df['premium'].iloc[-1] / 100)
-    st.metric("估算净值", f"{estimated_nav:.4f} 元", 
-              help="基于价格比率长期均值估算的理论净值")
+    # 显示净值（真实净值或估算净值）
+    if 'nav_value' in df.columns and df['nav_value'].notna().any():
+        # 使用真实净值
+        nav_value = df['nav_value'].iloc[-1] if not pd.isna(df['nav_value'].iloc[-1]) else None
+        if nav_value is not None:
+            st.metric("当前净值", f"{nav_value:.4f} 元", 
+                      help="来自akshare的真实净值数据")
+        else:
+            estimated_nav = df['159941'].iloc[-1] / (1 + df['premium'].iloc[-1] / 100)
+            st.metric("估算净值", f"{estimated_nav:.4f} 元", 
+                      help="基于价格比率长期均值估算的理论净值")
+    else:
+        # 显示估算净值
+        estimated_nav = df['159941'].iloc[-1] / (1 + df['premium'].iloc[-1] / 100)
+        st.metric("估算净值", f"{estimated_nav:.4f} 元", 
+                  help="基于价格比率长期均值估算的理论净值")
 
 # 添加说明
-st.info("""
-**溢价率说明：**  
-- 溢价率 = (ETF实时价格 - ETF净值) ÷ ETF净值 × 100%  
-- 由于无法直接获取159941的净值数据，本应用使用价格比率的长期均值（250日）作为"理论净值"的代理来计算溢价率  
-- 实际溢价率请以基金公司公布的净值为准
-""")
+if 'nav_value' in df.columns and df['nav_value'].notna().any():
+    st.success("✅ 使用真实净值数据计算溢价率")
+    st.info("""
+    **溢价率说明：**  
+    - 溢价率 = (ETF实时价格 - ETF净值) ÷ ETF净值 × 100%  
+    - 本应用使用akshare获取的159941真实净值数据计算溢价率
+    - 数据来源：akshare金融数据接口
+    """)
+else:
+    st.warning("⚠️ 使用估算方法计算溢价率")
+    st.info("""
+    **溢价率说明：**  
+    - 溢价率 = (ETF实时价格 - ETF净值) ÷ ETF净值 × 100%  
+    - 由于无法获取159941的净值数据，本应用使用价格比率的长期均值（250日）作为"理论净值"的代理来计算溢价率  
+    - 实际溢价率请以基金公司公布的净值为准
+    """)
 
 # 创建交互式图表
 fig = make_subplots(
@@ -311,6 +333,26 @@ fig.add_trace(
 )
 
 # 第二个子图：溢价率
+# 准备hover数据
+hover_data = df[["159941", "QQQ"]].values
+if 'nav_value' in df.columns:
+    # 如果有净值数据，在hover中显示净值
+    hover_data = df[["159941", "QQQ", "nav_value"]].values
+    hover_template = "<b>溢价率</b><br>" + \
+                     "日期: %{x|%Y-%m-%d}<br>" + \
+                     "溢价率: %{y:.2f}%<br>" + \
+                     "159941价格: %{customdata[0]:.4f} 元<br>" + \
+                     "净值: %{customdata[2]:.4f} 元<br>" + \
+                     "QQQ: $%{customdata[1]:.2f}<br>" + \
+                     "<extra></extra>"
+else:
+    hover_template = "<b>溢价率</b><br>" + \
+                     "日期: %{x|%Y-%m-%d}<br>" + \
+                     "溢价率: %{y:.2f}%<br>" + \
+                     "159941: %{customdata[0]:.4f} 元<br>" + \
+                     "QQQ: $%{customdata[1]:.2f}<br>" + \
+                     "<extra></extra>"
+
 fig.add_trace(
     go.Scatter(
         x=df.index,
@@ -318,13 +360,8 @@ fig.add_trace(
         name="溢价率",
         mode="lines",
         line=dict(color="#2ca02c", width=2),
-        hovertemplate="<b>溢价率</b><br>" +
-                      "日期: %{x|%Y-%m-%d}<br>" +
-                      "溢价率: %{y:.2f}%<br>" +
-                      "159941: %{customdata[0]:.4f}<br>" +
-                      "QQQ: $%{customdata[1]:.2f}<br>" +
-                      "<extra></extra>",
-        customdata=df[["159941", "QQQ"]].values
+        hovertemplate=hover_template,
+        customdata=hover_data
     ),
     row=2, col=1
 )
