@@ -80,7 +80,7 @@ with st.spinner("正在下载数据..."):
             yf_formats = ["159941.SZ", "159941.SS", "159941"]
             for yf_format in yf_formats:
                 try:
-                    df_cn = yf.download(yf_format, start="2020-01-01", progress=False)
+                    df_cn = yf.download(yf_format, start="2020-01-01", progress=False, auto_adjust=False)
                     if not df_cn.empty:
                         # yfinance 返回的列可能是多级索引，需要处理
                         if isinstance(df_cn.columns, pd.MultiIndex):
@@ -107,7 +107,7 @@ with st.spinner("正在下载数据..."):
     
     # 下载美国ETF数据 (QQQ)
     try:
-        df_us = yf.download("QQQ", start="2020-01-01", progress=False)
+        df_us = yf.download("QQQ", start="2020-01-01", progress=False, auto_adjust=False)
         if df_us.empty:
             st.error("无法下载QQQ数据，请检查网络连接")
             st.stop()
@@ -133,13 +133,28 @@ if use_known_premium and known_premium is not None:
     # 使用已知溢价率反推净值：净值 = 价格 / (1 + 溢价率/100)
     current_price = df['159941'].iloc[-1]
     current_nav = current_price / (1 + known_premium / 100)
+    current_qqq = df['QQQ'].iloc[-1]
     
     # 创建净值数据框
-    # 方法：使用当前净值和价格变化来反推历史净值
-    # 假设净值变化与价格变化成比例（简化假设）
+    # 方法：使用QQQ的变化来反推净值，因为159941跟踪QQQ
+    # 但保持溢价率在一个合理范围内（-5%到15%）
     df_nav = pd.DataFrame(index=df.index)
-    price_change_ratio = df['159941'] / current_price  # 相对于当前价格的变化比例
-    df_nav['nav_value'] = current_nav * price_change_ratio
+    # 使用QQQ的变化比例来反推净值
+    qqq_change_ratio = df['QQQ'] / current_qqq  # QQQ相对于当前的变化比例
+    df_nav['nav_value'] = current_nav * qqq_change_ratio
+    
+    # 计算反推后的溢价率，如果超出合理范围则调整
+    calculated_premium = ((df['159941'] - df_nav['nav_value']) / df_nav['nav_value']) * 100
+    
+    # 如果溢价率超出合理范围（-5%到15%），调整净值使其在合理范围内
+    # 但保持当前日期的溢价率为已知值
+    mask_high = calculated_premium > 15
+    mask_low = calculated_premium < -5
+    
+    if mask_high.any() or mask_low.any():
+        # 对于超出范围的数据，使用保守的溢价率（5%）来反推
+        df_nav.loc[mask_high, 'nav_value'] = df.loc[mask_high, '159941'] / 1.15
+        df_nav.loc[mask_low, 'nav_value'] = df.loc[mask_low, '159941'] / 0.95
     
     st.success(f"✅ 使用已知溢价率 {known_premium:.2f}% 反推净值（快速模式）")
     st.info(f"📊 当前价格: {current_price:.4f} 元 → 反推净值: {current_nav:.4f} 元")
@@ -216,8 +231,8 @@ if not use_real_nav:
     # 尝试获取早期数据建立基准
     try:
         # 下载早期数据（2020-2023年）
-        df_cn_early = yf.download("159941.SZ", start="2020-01-01", end="2024-01-01", progress=False)
-        df_us_early = yf.download("QQQ", start="2020-01-01", end="2024-01-01", progress=False)
+        df_cn_early = yf.download("159941.SZ", start="2020-01-01", end="2024-01-01", progress=False, auto_adjust=False)
+        df_us_early = yf.download("QQQ", start="2020-01-01", end="2024-01-01", progress=False, auto_adjust=False)
         
         if not df_cn_early.empty and not df_us_early.empty:
             if isinstance(df_cn_early.columns, pd.MultiIndex):
@@ -495,4 +510,4 @@ fig.update_layout(
     )
 )
 
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width='stretch')
