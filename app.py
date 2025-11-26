@@ -8,18 +8,8 @@ from datetime import datetime
 
 st.title("159941 vs QQQ 溢价情绪指标（在线版）")
 
-# 添加参数设置
-st.sidebar.header("参数设置")
-st.sidebar.markdown("""
-**溢价率计算公式：**  
-溢价率 = (ETF实时价格 - ETF净值) ÷ ETF净值 × 100%
-
-**说明：**  
-使用baostock获取159941的真实净值和收盘价数据。
-""")
-
 # 添加加载状态
-with st.spinner("正在从baostock获取数据..."):
+with st.spinner("正在获取数据..."):
     df_cn = None
     df_nav = None
     df_us = None
@@ -209,12 +199,14 @@ with col4:
             st.metric("当前净值", "N/A", help="净值数据缺失")
 
 # 添加说明
-st.success("✅ 使用天天基金网真实净值数据计算溢价率")
 st.info("""
-**溢价率说明：**  
-- 溢价率 = (ETF实时价格 - ETF净值) ÷ ETF净值 × 100%  
-- 本应用使用baostock获取159941收盘价，从天天基金网获取净值数据计算溢价率
-- 数据来源：baostock（收盘价）+ 天天基金网（净值）
+**溢价率计算公式：**  
+溢价率 = (ETF实时价格 - ETF净值) ÷ ETF净值 × 100%
+
+**数据来源：**  
+- 159941收盘价：baostock（失败时自动回退到yfinance）
+- 159941净值：天天基金网（官方数据源）
+- QQQ价格：yfinance
 """)
 
 # 创建交互式图表
