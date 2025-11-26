@@ -74,9 +74,15 @@ with st.spinner("正在获取数据..."):
             st.error(f"下载159941数据时出错: {str(e)}")
             st.stop()
     
-    # 从天天基金网获取159941净值（官方数据源，快速可靠）
+    # 获取159941净值（优先天天基金网，数据不足时使用akshare）
     # 无论baostock是否成功，都需要获取净值
     df_nav = None
+    
+    # 使用df_cn的日期范围获取净值
+    start_date = df_cn.index[0].strftime("%Y-%m-%d")
+    end_date = df_cn.index[-1].strftime("%Y-%m-%d")
+    
+    # 方法1: 优先使用天天基金网（快速）
     try:
         import requests
         from lxml import etree
@@ -105,23 +111,57 @@ with st.spinner("正在获取数据..."):
                 return nav_df
             return pd.DataFrame()
         
-        # 使用df_cn的日期范围获取净值
-        start_date = df_cn.index[0].strftime("%Y-%m-%d")
-        end_date = df_cn.index[-1].strftime("%Y-%m-%d")
-        
         df_nav = get_159941_nav_from_eastmoney(start_date, end_date)
         
+        # 检查数据是否足够（如果最早日期晚于所需日期，说明数据不足）
         if not df_nav.empty:
-            st.success(f"✅ 从天天基金网成功获取 159941 净值 ({len(df_nav)} 条)")
-        else:
-            st.warning("⚠️ 从天天基金网未获取到净值数据")
-            df_nav = None
+            nav_earliest_date = df_nav.index.min()
+            required_earliest_date = pd.to_datetime(start_date)
+            
+            # 如果净值数据最早日期比所需日期晚超过30天，说明数据不足，使用akshare
+            if (nav_earliest_date - required_earliest_date).days > 30:
+                st.warning(f"⚠️ 天天基金网净值数据最早只到 {nav_earliest_date.strftime('%Y-%m-%d')}，使用akshare获取完整历史数据...")
+                df_nav = None
+            else:
+                st.success(f"✅ 从天天基金网成功获取 159941 净值 ({len(df_nav)} 条)")
     except ImportError:
-        st.warning("⚠️ 缺少requests或lxml库，无法从天天基金网获取净值")
+        st.warning("⚠️ 缺少requests或lxml库，尝试使用akshare...")
         df_nav = None
     except Exception as e:
-        st.warning(f"⚠️ 从天天基金网获取净值失败: {str(e)}")
+        st.warning(f"⚠️ 从天天基金网获取净值失败: {str(e)}，尝试使用akshare...")
         df_nav = None
+    
+    # 方法2: 如果天天基金网数据不足，使用akshare获取完整历史数据
+    if df_nav is None or df_nav.empty:
+        try:
+            import akshare as ak
+            st.info("📊 正在从akshare获取完整历史净值数据（可能需要几秒钟）...")
+            
+            # akshare需要YYYYMMDD格式
+            start_date_ak = df_cn.index[0].strftime("%Y%m%d")
+            end_date_ak = df_cn.index[-1].strftime("%Y%m%d")
+            
+            df_nav_raw = ak.fund_etf_fund_info_em(fund="159941", start_date=start_date_ak, end_date=end_date_ak)
+            
+            if not df_nav_raw.empty and '净值日期' in df_nav_raw.columns and '单位净值' in df_nav_raw.columns:
+                df_nav_raw['净值日期'] = pd.to_datetime(df_nav_raw['净值日期'])
+                df_nav_raw.set_index('净值日期', inplace=True)
+                df_nav_raw['nav_value'] = pd.to_numeric(df_nav_raw['单位净值'], errors='coerce')
+                df_nav = df_nav_raw[['nav_value']].dropna()
+                
+                if not df_nav.empty:
+                    st.success(f"✅ 从akshare成功获取 159941 净值 ({len(df_nav)} 条，日期范围: {df_nav.index.min().strftime('%Y-%m-%d')} 至 {df_nav.index.max().strftime('%Y-%m-%d')})")
+                else:
+                    df_nav = None
+            else:
+                st.warning("⚠️ akshare返回的数据格式不正确")
+                df_nav = None
+        except ImportError:
+            st.warning("⚠️ 缺少akshare库，无法获取完整历史净值数据")
+            df_nav = None
+        except Exception as e:
+            st.warning(f"⚠️ 从akshare获取净值失败: {str(e)}")
+            df_nav = None
     
     # 下载美国ETF数据 (QQQ)
     try:
@@ -205,7 +245,7 @@ st.info("""
 
 **数据来源：**  
 - 159941收盘价：baostock（失败时自动回退到yfinance）
-- 159941净值：天天基金网（官方数据源）
+- 159941净值：天天基金网（优先，快速）/ akshare（备选，完整历史数据）
 - QQQ价格：yfinance
 """)
 
